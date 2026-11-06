@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Volley Tracker</title>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Volley Track</title>
 <link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icons/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Volley"><meta name="theme-color" content="#0f1218">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <style>
@@ -71,7 +71,7 @@ const setWin=(g,s)=>{const a=sc(s,g.teams[0].id),b=sc(s,g.teams[1].id);return a=
 const brk=(g,i)=>{const a=g.sets[i],b=g.sets[i+1];return b&&a.end&&b.start>a.end?`<div class="row" style="cursor:default;opacity:.75">☕ <span class="g">Break <span class="mu">${F(a.end-g.start)} – ${F(b.start-g.start)}</span></span><b>${F(b.start-a.end)}</b></div>`:''};
 function pick(i){sel=i;[0,1].forEach(j=>{document.getElementById('c'+j).parentElement.style.outline=j==i?'2px solid var(--ac)':'2px solid transparent'})}
 function draw(){clearInterval(draw.i);const g=G();let h='';
-if(v=='home'){const l=live();h=`<div class="pg hm"><h1>🏐 Volley Tracker</h1>${l?'<button class="p" onclick="go(\'live\')">Continue game</button>':'<button class="p" onclick="go(\'live\')">New game</button>'}<button onclick="go('hist')">Previous games</button></div>`}
+if(v=='home'){const l=live();h=`<div class="pg hm"><h1>🏐 Volley Track</h1>${l?'<button class="p" onclick="go(\'live\')">Continue game</button>':'<button class="p" onclick="go(\'live\')">New game</button>'}<button onclick="go('hist')">Previous games</button></div>`}
 else if(v=='live'){const L=live(),T=L?L.teams:draft.teams,s=openSet(L);
 h=`<div class="lv"><div class="tp">${[0,1].map(i=>`<div class="tm"><div class="nm" onclick="editTeam(${i})"><span class="ch" style="background:${T[i].color}"></span>${esc(T[i].name)}</div><div class="sc" data-i="${i}">${seg(s?sc(s,T[i].id):L?sc(last(L),T[i].id):0)}</div></div>`).join('')}</div>
 <div class="bt lb"><div id="tmr">${F(L&&!L.end?Date.now()-L.start:0)}</div><div class="r">${!L?'<button class="p" onclick="start()">Start match</button>':s?'<button class="p" onclick="endSet()">End set</button>':'<button class="p" onclick="nextSet()">Start next set</button><button class="d" onclick="endGame()">End game</button>'}<button onclick="go('home')">Home</button></div>${L?res(L):''}</div></div>`;

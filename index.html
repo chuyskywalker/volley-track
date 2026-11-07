@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Volley Tracker</title>
+<title>VolleyTrack</title>
 
 <!-- PWA / home-screen install metadata -->
 <link rel="manifest" href="manifest.webmanifest">
@@ -14,7 +14,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 
 <!--
-  VOLLEY TRACKER  -  single-file app (HTML + CSS + JS, no framework).
+  VolleyTrack  -  single-file app (HTML + CSS + JS, no framework).
 
   HOW IT WORKS
   - Everything is drawn by draw(), which rebuilds the whole screen as an HTML string
@@ -485,7 +485,7 @@ function pick(i) {
 // ---- Home ----
 function viewHome() {
   const l = live();
-  return `<div class="pg hm"><h1>🏐 Volley Tracker</h1>
+  return `<div class="pg hm"><h1>🏐 VolleyTrack</h1>
     ${l ? '<button class="p" onclick="go(\'live\')">Continue game</button>'
         : '<button class="p" onclick="go(\'live\')">New game</button>'}
     <button onclick="go('hist')">Previous games</button></div>`;

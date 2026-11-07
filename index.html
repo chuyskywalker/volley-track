@@ -1,116 +1,792 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>VolleyTrack</title>
-<link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icons/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Volley"><meta name="theme-color" content="#0f1218">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Volley Tracker</title>
+
+<!-- PWA / home-screen install metadata -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Volley">
+<meta name="theme-color" content="#0f1218">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+
+<!--
+  VOLLEY TRACKER  -  single-file app (HTML + CSS + JS, no framework).
+
+  HOW IT WORKS
+  - Everything is drawn by draw(), which rebuilds the whole screen as an HTML string
+    for the current view `v` and assigns it to #app. Buttons call global functions
+    via inline onclick="..." attributes.
+  - Views (value of `v`): home | live | hist | detail | edit | raw | video
+  - Data lives in localStorage under the key "vb2" (see db below).
+  - Dialogs are built with M() (a tiny promise-based modal).
+  - Video export uses the Mediabunny library (vendored at ./vendor/mediabunny.js
+    by the GitHub Actions build) + the browser's WebCodecs encoder.
+
+  DATA MODEL (what "Raw data" shows)
+  game = {
+    id: <ms timestamp of start>,   version: 2,
+    teams: [ {id, name, color}, {id, name, color} ],   // array order = left/right on screen
+    start: <ms>, end: <ms or null while in progress>,
+    sets: [ { start: <ms>, end: <ms or null while open>, server: <team id>,
+              points: [ { t: <ms>, team: <team id> } ] } ]
+  }
+  All timestamps are ABSOLUTE epoch milliseconds; screens show them relative
+  to the game or set start.
+
+  NAME LEGEND (short names are used throughout)
+  A      #app container            db     all saved data  { games: [...] }
+  G()    game currently selected   live() the in-progress game (end == null)
+  last() last set of a game        openSet() the set currently being played
+  sc()   points a team has in a set       scs() "12 - 9" score text for a set
+  tm()   look up a team by id      setWin() team that won a set (null if tied)
+  gw()   team that won the match   P()/F() time formatting helpers
+  M()    modal dialog              sb()   draws one scoreboard overlay frame
+  v      current view name         gid    id of the selected game
+-->
+
 <style>
-:root{color-scheme:dark;--bg:#0f1218;--card:#1a1f29;--tx:#f2f4f8;--mu:#8b93a3;--ac:#3ea6ff}
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font:16px system-ui,sans-serif;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
-button{font:inherit;color:var(--tx);background:var(--card);border:1px solid #2c3442;border-radius:12px;padding:12px 16px}
-button.p{background:var(--ac);color:#04121f;border:0;font-weight:700}button.d{color:#ff6b6b}
-.pg{padding:16px;max-width:560px;margin:auto}.hm{display:flex;flex-direction:column;gap:12px;padding-top:12vh}
-.hm button{padding:18px;font-size:18px}h1,h2{margin:0 0 12px}
-.lv{display:flex;flex-direction:column;height:100%}.tp{flex:3;display:flex}.tm{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:16px 8px}
-.nm{display:flex;align-items:center;gap:8px;font-size:20px;font-weight:600;padding:18px 0}.ch{width:18px;height:18px;border-radius:4px;display:inline-block}
-.sc{width:100%;display:flex;justify-content:center;touch-action:none;user-select:none;padding:26px 8px}
-.bt{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:12px;padding:14px 0;border-top:1px solid #2c3442}.bt .r{display:flex;gap:10px}
-#tmr{font:700 40px ui-monospace,monospace;padding:14px 0}.lb{overflow-y:auto;justify-content:flex-start}.lb>:first-child{margin-top:auto}.lb>:last-child{margin-bottom:auto}
-.row{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:12px;padding:12px;margin:8px 0;cursor:pointer}.row>.g{flex:1}.mu{color:var(--mu);font-size:14px}
-.md{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:9;padding:16px}.bx{background:var(--card);border-radius:16px;padding:18px;width:100%;max-width:380px}
-.md .bt{padding:0;border:0;flex-direction:row;flex-wrap:wrap;justify-content:center;margin-top:12px}.bx input[type=text]{width:100%;padding:10px;font-size:18px;border-radius:8px;border:1px solid #2c3442;background:var(--bg);color:var(--tx)}
-.bx input[type=color]{width:100%;height:44px;margin-top:10px;border:0;background:none}
-pre{background:var(--card);padding:12px;border-radius:12px;overflow:auto;font-size:12px;max-height:55vh}
-canvas{width:100%;background:repeating-conic-gradient(#333 0 25%,#444 0 50%) 0 0/20px 20px;border-radius:8px}
-.nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
-</style></head><body><div id="app"></div><script>
-const A=document.getElementById('app');let db;try{db=JSON.parse(localStorage.vb2)}catch(e){}db=db||{games:[]};
-const save=()=>{try{localStorage.vb2=JSON.stringify(db)}catch(e){}};
-const P=n=>String(n).padStart(2,'0'),F=ms=>{ms=Math.max(0,Math.floor(ms/1000));return P(ms/3600|0)+':'+P(ms/60%60|0)+':'+P(ms%60)};
-const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const uid=()=>'t_'+Math.random().toString(36).slice(2,8);
-let v='home',gid=null,draft={teams:[{id:uid(),name:'Team A',color:'#e63946'},{id:uid(),name:'Team B',color:'#1d6fe0'}]};
-const G=()=>db.games.find(g=>g.id==gid),live=()=>db.games.find(g=>!g.end),last=g=>g.sets[g.sets.length-1];
-const sc=(s,id)=>s.points.filter(p=>p.team==id).length,tm=(g,id)=>g.teams.find(t=>t.id==id),scs=(g,s)=>g.teams.map(t=>sc(s,t.id)).join(' - '),openSet=g=>g&&g.sets.length&&!last(g).end?last(g):null;
-const go=(x,id)=>{if(job)job.cancel();v=x;if(id)gid=id;if(x=='live'&&live())gid=live().id;draw()};
-function M(h,b){return new Promise(r=>{const d=document.createElement('div');d.className='md';d.innerHTML='<div class="bx">'+h+'<div class="bt">'+b.map((x,i)=>`<button data-i="${i}">${x}</button>`).join('')+'</div></div>';d.onclick=e=>{const i=e.target.dataset.i;if(i!=null){d.remove();r([+i,d])}};document.body.append(d)})}
-const yes=async(t,l='Confirm')=>(await M(t,[l,'Cancel']))[0]==0;
-async function server(t){const i=(await M('Who is serving?',[esc(t[0].name),esc(t[1].name),'Cancel']))[0];return i>1?null:t[i].id}
-async function editTeam(i){const g=live()&&v=='live'?live():v=='live'?draft:G(),t=g.teams[i];
-const [b,d]=await M(`<input type="text" value="${esc(t.name)}"><input type="color" value="${t.color}">`,['Save','Cancel']);
-if(b==0){t.name=d.querySelector('input[type=text]').value.trim()||t.name;t.color=d.querySelector('input[type=color]').value;save();draw()}}
-async function start(){const T=draft.teams,s=await server(T);if(!s)return;const n=Date.now();
-const g={id:n,version:2,teams:JSON.parse(JSON.stringify(T)),start:n,end:null,sets:[{start:n,end:null,server:s,points:[]}]};db.games.push(g);save();gid=n;draw()}
-function pt(i){const L=live(),s=openSet(L);if(!s)return;s.points.push({t:Date.now(),team:L.teams[i].id});save();draw()}
-function undo(i){const L=live(),s=openSet(L);if(!s)return;for(let j=s.points.length-1;j>=0;j--)if(s.points[j].team==L.teams[i].id){s.points.splice(j,1);break}save();draw()}
-async function endSet(){if(await yes('End this set?','End set')){last(live()).end=Date.now();save();draw()}}
-async function nextSet(){const g=live(),s=await server(g.teams);if(!s)return;g.sets.push({start:Date.now(),end:null,server:s,points:[]});save();draw()}
-async function endGame(){if(await yes('End the game?','End game')){const g=live();g.end=Date.now();save();gid=g.id;v='detail';draw()}}
-async function del(){if(await yes('Delete this game permanently?','Delete')){db.games=db.games.filter(g=>g.id!=gid);save();go('hist')}}
-const shift=(s,d)=>{s.start+=d;if(s.end)s.end+=d;s.points.forEach(p=>p.t+=d)};
-async function editSet(si){const g=G(),s=g.sets[si];if(!s.end)return alert('Finish the set first.');
-const lp=s.points.reduce((m,p)=>Math.max(m,p.t),s.start),nx=g.sets[si+1];
-const [b]=await M(`<b>Set ${si+1}</b><br>Duration ${F(s.end-s.start)}<br>Serving: ${esc(tm(g,s.server).name)}`,['-10s','+10s','-1m','+1m','Swap server','Done']);
-if(b==4){s.server=g.teams.find(t=>t.id!=s.server).id;save();return editSet(si)}if(b==5)return draw();
-const d=[-1e4,1e4,-6e4,6e4][b];let ne=s.end+d;
-if(ne<lp){alert('Set cannot end before its last point ('+F(lp-s.start)+').');return editSet(si)}
-if(nx&&ne>nx.start){if(!await yes(`This overlaps set ${si+2}. It and all following sets will move later by ${Math.ceil((ne-nx.start)/1000)}s.`,'Shift later sets'))return editSet(si);
-const o=ne-nx.start;for(let j=si+1;j<g.sets.length;j++)shift(g.sets[j],o)}
-s.end=ne;const le=last(g).end;if(g.end<le)g.end=le;save();editSet(si)}
-async function editPt(si,pi){const g=G(),s=g.sets[si],p=s.points[pi];
-const [b]=await M(`<b>Set ${si+1} point</b><br>${esc(tm(g,p.team).name)} at ${F(p.t-s.start)}`,['-1s','+1s','-5s','+5s','Reassign','Delete','Done']);
-if(b==6)return draw();if(b==5){s.points.splice(pi,1);save();return draw()}
-if(b==4){p.team=g.teams.find(t=>t.id!=p.team).id;save();return editPt(si,pi)}
-const nt=p.t+[-1e3,1e3,-5e3,5e3][b];if(nt<s.start||nt>(s.end||Date.now())){alert('A point must stay inside its set.');return editPt(si,pi)}
-p.t=nt;s.points.sort((a,b)=>a.t-b.t);save();editPt(si,s.points.indexOf(p))}
-async function addSet(){const g=G(),s=await server(g.teams);if(!s)return;const st=last(g).end||g.end,e=st+3e5;g.sets.push({start:st,end:e,server:s,points:[]});if(g.end<e)g.end=e;save();draw()}
-async function addPt(si){const g=G(),s=g.sets[si],[b]=await M('Add point to set '+(si+1),[esc(g.teams[0].name),esc(g.teams[1].name),'Cancel']);if(b>1)return;const lp=s.points.length?s.points[s.points.length-1].t:s.start,p={t:Math.min(lp+1e3,s.end),team:g.teams[b].id};s.points.push(p);s.points.sort((a,c)=>a.t-c.t);save();editPt(si,s.points.indexOf(p))}
-const SG=['12,2 48,2 54,8 48,14 12,14 6,8','54,10 60,16 60,40 54,46 48,40 48,16','54,54 60,60 60,84 54,90 48,84 48,60','12,86 48,86 54,92 48,98 12,98 6,92','6,54 12,60 12,84 6,90 0,84 0,60','6,10 12,16 12,40 6,46 0,40 0,16','12,44 48,44 54,50 48,56 12,56 6,50'],DM=['abcdef','bc','abdeg','abcdg','bcfg','acdfg','acdefg','abc','abcdefg','abcdfg'];
-const dig=(n,x)=>SG.map((p,i)=>`<polygon points="${p}" transform="translate(${x} 0)" fill="${DM[n].includes('abcdefg'[i])?'#39ff14':'#39ff1415'}"/>`).join('');
-const seg=n=>`<svg viewBox="-2 -2 138 104" style="width:90%;height:auto;transform:skewX(-6deg);filter:drop-shadow(0 0 6px #39ff1466)" aria-hidden="true">${dig(n/10%10|0,0)}${dig(n%10,74)}</svg>`;
-const res=g=>`<div style="display:flex;flex-wrap:wrap;gap:8px 14px;justify-content:center;padding:0 12px 6px;font-size:14px">${g.sets.filter(s=>s.end).map(s=>{const w=setWin(g,s);return `<span style="display:inline-flex;align-items:center;gap:6px"><span class="ch" style="border-radius:50%;width:12px;height:12px;background:${w?w.color:'transparent'}"></span>Set ${g.sets.indexOf(s)+1}: ${scs(g,s)}</span>`}).join('')}</div>`;
-const setWin=(g,s)=>{const a=sc(s,g.teams[0].id),b=sc(s,g.teams[1].id);return a==b?null:g.teams[a>b?0:1]},gw=g=>{const W=g.teams.map(t=>g.sets.filter(s=>{const w=setWin(g,s);return w&&w.id==t.id}).length);return W[0]==W[1]?null:g.teams[W[0]>W[1]?0:1]};
-const brk=(g,i)=>{const a=g.sets[i],b=g.sets[i+1];return b&&a.end&&b.start>a.end?`<div class="row" style="cursor:default;opacity:.75">☕ <span class="g">Break <span class="mu">${F(a.end-g.start)} – ${F(b.start-g.start)}</span></span><b>${F(b.start-a.end)}</b></div>`:''};
-function pick(i){sel=i;[0,1].forEach(j=>{document.getElementById('c'+j).parentElement.style.outline=j==i?'2px solid var(--ac)':'2px solid transparent'})}
-function draw(){clearInterval(draw.i);const g=G();let h='';
-if(v=='home'){const l=live();h=`<div class="pg hm"><h1>🏐 VolleyTrack</h1>${l?'<button class="p" onclick="go(\'live\')">Continue game</button>':'<button class="p" onclick="go(\'live\')">New game</button>'}<button onclick="go('hist')">Previous games</button></div>`}
-else if(v=='live'){const L=live(),T=L?L.teams:draft.teams,s=openSet(L);
-h=`<div class="lv"><div class="tp">${[0,1].map(i=>`<div class="tm"><div class="nm" onclick="editTeam(${i})"><span class="ch" style="background:${T[i].color}"></span>${esc(T[i].name)}</div><div class="sc" data-i="${i}">${seg(s?sc(s,T[i].id):L?sc(last(L),T[i].id):0)}</div></div>`).join('')}</div>
-<div class="bt lb"><div id="tmr">${F(L&&!L.end?Date.now()-L.start:0)}</div><div class="r">${!L?'<button class="p" onclick="start()">Start match</button>':s?'<button class="p" onclick="endSet()">End set</button>':'<button class="p" onclick="nextSet()">Start next set</button><button class="d" onclick="endGame()">End game</button>'}<button onclick="go('home')">Home</button></div>${L?res(L):''}</div></div>`;
-draw.i=setInterval(()=>{const e=document.getElementById('tmr');if(e)e.textContent=F(L&&!L.end?Date.now()-L.start:0)},250)}
-else if(v=='hist'){h=`<div class="pg"><div class="nav"><button onclick="go('home')">Back</button></div><h2>Previous games</h2>`+([...db.games].filter(x=>x.end).sort((a,b)=>b.start-a.start).map(x=>`<div class="row" onclick="go('detail',${x.id})"><div class="g"><b>${esc(x.teams[0].name)} vs ${esc(x.teams[1].name)}</b><div class="mu">${new Date(x.start).toLocaleString()}</div></div>›</div>`).join('')||'<p class="mu">No finished games yet.</p>')+'</div>'}
-else if(g&&v=='detail'){h=`<div class="pg"><div class="nav"><button onclick="go('hist')">Back</button></div><h2>Overview</h2><div class="mu">${new Date(g.start).toLocaleString()}</div>
-${g.teams.map((t,i)=>`<div class="row" onclick="editTeam(${i})"><span class="ch" style="background:${t.color}"></span><b>${esc(t.name)}</b>${gw(g)==t?' <b style="font-size:12px;color:var(--ac)">Winner</b>':''}</div>`).join('')}
-${g.sets.map((s,i)=>{const w=setWin(g,s);return `<div class="row"><span class="ch" style="border-radius:50%;background:${w?w.color:'transparent'}"></span><div class="g">Set ${i+1}</div><b>${scs(g,s)}</b></div>`}).join('')}
-<div class="nav" style="margin-top:12px"><button onclick="go('edit')">Edit record</button><button onclick="go('video')">Create video</button><button onclick="go('raw')">Raw data</button><button class="d" onclick="del()">Delete</button></div></div>`}
-else if(g&&v=='edit'){h=`<div class="pg"><div class="nav"><button onclick="go('detail')">Back</button></div><h2>Timeline</h2>`+g.sets.map((s,i)=>`<div class="row" style="cursor:default"><div class="g"><b>Set ${i+1} (${scs(g,s)}) serve: ${esc(tm(g,s.server).name)}</b><div class="mu">${F(s.start-g.start)} – ${F((s.end||g.end)-g.start)} · ${F((s.end||g.end)-s.start)}</div></div><button onclick="addPt(${i})">+ Point</button><button onclick="editSet(${i})">Edit</button></div>`+s.points.map((p,j)=>`<div class="row" style="cursor:default;margin-left:16px"><span class="ch" style="background:${tm(g,p.team).color}"></span><span class="g">${esc(tm(g,p.team).name)} <span class="mu">${F(p.t-s.start)}</span></span><button onclick="editPt(${i},${j})">Edit</button></div>`).join('')+brk(g,i)).join('')+'<button class="p" style="width:100%;margin-top:12px" onclick="addSet()">+ Add set</button></div>'}
-else if(g&&v=='raw'){h=`<div class="pg"><div class="nav"><button onclick="go('detail')">Back</button><button class="p" onclick="navigator.clipboard.writeText(JSON.stringify(G(),null,2))">Copy</button><button onclick="dl()">Download</button></div><pre>${esc(JSON.stringify(g,null,2))}</pre></div>`}
-else if(g&&v=='video'){h=`<div class="pg"><div class="nav"><button onclick="go('detail')">Back</button></div><h2>Score board video</h2><p class="mu">Pick a style (previews show the final score), then render. Output is a transparent WebM, encoded on-device much faster than real time.</p>${[0,1].map(i=>`<div class="row" style="outline:${sel==i?'2px solid var(--ac)':'2px solid transparent'}" onclick="pick(${i})"><canvas id="c${i}" width="700" height="190"></canvas></div>`).join('')}${can()?'':'<p style="color:#ff6b6b">Video rendering is not available in this browser. You can still export the raw data.</p>'}<button class="p" style="width:100%" ${can()?'':'disabled'} onclick="rec()">Render video</button><p id="pr" class="mu"></p><div id="out"></div></div>`}
-A.innerHTML=h;if(v=='live')bind();if(g&&v=='video')[0,1].forEach(i=>{const x=document.getElementById('c'+i).getContext('2d');x.translate(-20,-20);sb(x,g,g.end,i)})}
-function bind(){let y0,el;A.onpointerdown=e=>{el=e.target.closest('.sc');y0=e.clientY};A.onpointerup=e=>{const s=e.target.closest('.sc');if(!s||s!=el)return;const i=+s.dataset.i;e.clientY-y0>40?undo(i):pt(i)}}
-function dl(){saveFile(new Blob([JSON.stringify(G(),null,2)],{type:'application/json'}),'game-'+G().id+'.json')}
-function state(g,t){let w=[0,0],cur=null;g.sets.forEach(s=>{if(s.start<=t){cur=s;if(s.end&&s.end<=t){const a=sc(s,g.teams[0].id),b=sc(s,g.teams[1].id);if(a!=b)w[a>b?0:1]++}}});
-const s=cur||g.sets[0];return{w,n:g.teams.map(T=>s.points.filter(p=>p.team==T.id&&p.t<=t).length),i:g.sets.indexOf(s)+1}}
-function rr(x,a,b,w,h,r){x.beginPath();x.roundRect(a,b,w,h,r);x.fill()}
-function sb(x,g,t,st){const S=state(g,t);x.clearRect(0,0,1280,720);x.textBaseline='middle';
-if(!st){rr(x,30,30,640,70,14);x.fillStyle='#000c';rr(x,30,30,640,70,14);
-[0,1].forEach(i=>{const X=40+i*320;x.fillStyle=g.teams[i].color;rr(x,X,40,10,50,4);x.fillStyle='#fff';x.font='600 26px sans-serif';x.textAlign='left';x.fillText(g.teams[i].name.slice(0,12),X+22,65);x.font='800 38px sans-serif';x.textAlign='right';x.fillText(S.n[i],X+270,65);x.font='20px sans-serif';x.fillStyle='#ffd23f';x.fillText('•'.repeat(S.w[i]),X+300,65)})}
-else{x.fillStyle='#000c';rr(x,30,30,330,130,14);[0,1].forEach(i=>{const Y=40+i*55;x.fillStyle=g.teams[i].color;rr(x,40,Y,12,45,4);x.fillStyle='#fff';x.font='600 24px sans-serif';x.textAlign='left';x.fillText(g.teams[i].name.slice(0,12),62,Y+23);x.fillStyle='#ffd23f';x.font='700 22px sans-serif';x.fillText(S.w[i],240,Y+23);x.fillStyle='#fff';x.font='800 36px sans-serif';x.textAlign='right';x.fillText(S.n[i],345,Y+23)})}}
-let job=null,sel=0,vid=null;const can=()=>!!(window.Mediabunny&&window.VideoEncoder);
-async function saveFile(data,name){try{const f=new File([data],name,{type:data.type});if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:name});return}}catch(e){if(e.name=='AbortError')return}const a=document.createElement('a');a.href=URL.createObjectURL(data);a.download=name;document.body.append(a);a.click();a.remove()}
-async function rec(){if(job)job.cancel();let dead=false;const me=job={cancel(){dead=true}},st=sel,g=G(),pr=document.getElementById('pr'),o=document.getElementById('out');o.innerHTML='';let ok=false;
-if(window.Mediabunny&&window.VideoEncoder)try{
-const{Output,WebMOutputFormat,BufferTarget,CanvasSource}=Mediabunny,c=document.createElement('canvas');c.width=1280;c.height=720;const x=c.getContext('2d'),out=new Output({format:new WebMOutputFormat(),target:new BufferTarget()}),src=new CanvasSource(c,{codec:'vp9',bitrate:2e6,alpha:'keep',keyFrameInterval:2});
-out.addVideoTrack(src);await out.start();
-const T=new Set([g.start]);g.sets.forEach(s=>{T.add(s.start);if(s.end)T.add(s.end);s.points.forEach(p=>T.add(p.t))});for(let t=g.start;t<g.end;t+=1e4)T.add(t);
-const ts=[...T].filter(t=>t>=g.start&&t<g.end).sort((a,b)=>a-b);
-for(let i=0;i<ts.length;i++){if(dead){try{await out.cancel()}catch(e){}return}
-sb(x,g,ts[i],st);await src.add((ts[i]-g.start)/1e3,((ts[i+1]||g.end)-ts[i])/1e3);
-if(i%8==0){pr.textContent='Rendering '+Math.round(i/ts.length*100)+'%';await new Promise(r=>setTimeout(r))}}
-await out.finalize();job=null;pr.textContent='Done.';vid=new Blob([out.target.buffer],{type:'video/webm'});o.innerHTML=`<button class="p" onclick="saveFile(vid,'scoreboard.webm')">Save video</button>`;ok=true
-}catch(e){if(dead)return;job=null;pr.textContent='Could not render the video on this device: '+e.message+'. The game data can still be exported from the Raw data page.'}
-else{job=null;pr.textContent=window.Mediabunny?'This browser cannot encode video on-device, so the video cannot be made here. Export the raw data instead.':'The video library did not load, so the video cannot be made right now.'}
+/* ---------- Theme ---------- */
+:root {
+  color-scheme: dark;
+  --bg: #0f1218;     /* page background */
+  --card: #1a1f29;   /* cards, buttons, modals */
+  --tx: #f2f4f8;     /* main text */
+  --mu: #8b93a3;     /* muted text */
+  --ac: #3ea6ff;     /* accent (primary buttons, selection) */
 }
-try{screen.orientation.lock('portrait')}catch(e){}
-if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
-import('./vendor/mediabunny.js').then(m=>{window.Mediabunny=m;if(v=='video'&&!job)draw()}).catch(e=>console.warn('Mediabunny failed to load',e));
-draw();
-</script></body></html>
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--tx);
+  font: 16px system-ui, sans-serif;
+  /* keep content clear of the notch / home bar on phones */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ---------- Buttons ---------- */
+button {
+  font: inherit; color: var(--tx); background: var(--card);
+  border: 1px solid #2c3442; border-radius: 12px; padding: 12px 16px;
+}
+button.p { background: var(--ac); color: #04121f; border: 0; font-weight: 700; } /* primary */
+button.d { color: #ff6b6b; }                                                      /* destructive */
+
+/* ---------- Generic page layout (all views except "live") ---------- */
+.pg { padding: 16px; max-width: 560px; margin: auto; }
+.hm { display: flex; flex-direction: column; gap: 12px; padding-top: 12vh; }  /* home screen */
+.hm button { padding: 18px; font-size: 18px; }
+h1, h2 { margin: 0 0 12px; }
+
+/* ---------- Live scoring screen ---------- */
+.lv { display: flex; flex-direction: column; height: 100%; }  /* whole screen */
+.tp { flex: 3; display: flex; }                                /* top 3/4: two team halves */
+.tm {                                                          /* one team half */
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 10px; padding: 16px 8px;
+}
+.nm {                                                          /* color chip + team name */
+  display: flex; align-items: center; gap: 8px;
+  font-size: 20px; font-weight: 600; padding: 18px 0;
+}
+.ch { width: 18px; height: 18px; border-radius: 4px; display: inline-block; }  /* color chip */
+.sc {                                                          /* score digits (tap = +1, swipe down = -1) */
+  width: 100%; display: flex; justify-content: center;
+  touch-action: none; user-select: none; padding: 26px 8px;
+}
+.bt {                                                          /* bottom 1/4: timer + buttons */
+  flex: 1; display: flex; flex-direction: column;
+  justify-content: center; align-items: center;
+  gap: 12px; padding: 14px 0; border-top: 1px solid #2c3442;
+}
+.bt .r { display: flex; gap: 10px; }                           /* button row */
+#tmr { font: 700 40px ui-monospace, monospace; padding: 14px 0; }  /* game timer */
+/* .lb = the live screen's bottom panel: scrolls if the set results get long,
+   and stays vertically centered when there is room */
+.lb { overflow-y: auto; justify-content: flex-start; }
+.lb > :first-child { margin-top: auto; }
+.lb > :last-child  { margin-bottom: auto; }
+
+/* ---------- Rows (lists of games, sets, points) ---------- */
+.row {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--card); border-radius: 12px;
+  padding: 12px; margin: 8px 0; cursor: pointer;
+}
+.row > .g { flex: 1; }                                         /* .g = grows to fill the row */
+.mu { color: var(--mu); font-size: 14px; }                     /* muted small text */
+
+/* ---------- Modal dialog (built by M()) ---------- */
+.md {
+  position: fixed; inset: 0; background: #000a;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9; padding: 16px;
+}
+.bx { background: var(--card); border-radius: 16px; padding: 18px; width: 100%; max-width: 380px; }
+/* modal button group (reuses the .bt class, so undo the bottom-panel styling) */
+.md .bt { padding: 0; border: 0; flex-direction: row; flex-wrap: wrap; justify-content: center; margin-top: 12px; }
+.bx input[type=text] {
+  width: 100%; padding: 10px; font-size: 18px; border-radius: 8px;
+  border: 1px solid #2c3442; background: var(--bg); color: var(--tx);
+}
+.bx input[type=color] { width: 100%; height: 44px; margin-top: 10px; border: 0; background: none; }
+
+/* ---------- Misc ---------- */
+pre { background: var(--card); padding: 12px; border-radius: 12px; overflow: auto; font-size: 12px; max-height: 55vh; }
+canvas {  /* checkerboard behind canvases so transparency is visible in previews */
+  width: 100%; border-radius: 8px;
+  background: repeating-conic-gradient(#333 0 25%, #444 0 50%) 0 0 / 20px 20px;
+}
+.nav { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }  /* row of buttons at the top of a page */
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* =====================================================================
+   1. STATE, STORAGE AND SMALL HELPERS
+   ===================================================================== */
+
+const A = document.getElementById('app');   // the container every view is rendered into
+
+// Load saved data. localStorage key is "vb2"; change it to start with a clean slate.
+let db;
+try { db = JSON.parse(localStorage.vb2); } catch (e) {}
+db = db || { games: [] };
+
+// Persist db. Call after every change to a game.
+const save = () => {
+  try { localStorage.vb2 = JSON.stringify(db); } catch (e) {}
+};
+
+// P = zero-pad to 2 digits.  F = milliseconds -> "HH:MM:SS".
+const P = n => String(n).padStart(2, '0');
+const F = ms => {
+  ms = Math.max(0, Math.floor(ms / 1000));
+  return P(ms / 3600 | 0) + ':' + P(ms / 60 % 60 | 0) + ':' + P(ms % 60);
+};
+
+// Escape user text (team names) before putting it into HTML.
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// Random id for a team, e.g. "t_k3x9ab".
+const uid = () => 't_' + Math.random().toString(36).slice(2, 8);
+
+// UI state (not saved):
+let v = 'home';     // current view
+let gid = null;     // id of the game being viewed/edited
+let sel = 0;        // chosen overlay style on the video page (0 = bar, 1 = stacked card)
+let vid = null;     // last rendered video (a Blob), kept so Save can be retried
+let job = null;     // the render in progress, if any ({cancel()})
+// Team names/colors shown on the "new game" screen before the match starts:
+let draft = {
+  teams: [
+    { id: uid(), name: 'Team A', color: '#e63946' },
+    { id: uid(), name: 'Team B', color: '#1d6fe0' }
+  ]
+};
+
+// ---- Game lookups ----
+const G = () => db.games.find(g => g.id == gid);          // selected game
+const live = () => db.games.find(g => !g.end);            // game in progress (not ended)
+const last = g => g.sets[g.sets.length - 1];              // most recent set
+// The set being played right now (last set, if it has no end time yet), else null.
+const openSet = g => g && g.sets.length && !last(g).end ? last(g) : null;
+
+// ---- Score helpers ----
+const sc = (s, id) => s.points.filter(p => p.team == id).length;      // points a team has in set s
+const tm = (g, id) => g.teams.find(t => t.id == id);                  // team object from its id
+const scs = (g, s) => g.teams.map(t => sc(s, t.id)).join(' - ');      // "25 - 23"
+// Winner of a set = whoever has more points when it is viewed (null if tied).
+const setWin = (g, s) => {
+  const a = sc(s, g.teams[0].id), b = sc(s, g.teams[1].id);
+  return a == b ? null : g.teams[a > b ? 0 : 1];
+};
+// Winner of the match = team with more set wins (null if level).
+const gw = g => {
+  const W = g.teams.map(t => g.sets.filter(s => { const w = setWin(g, s); return w && w.id == t.id; }).length);
+  return W[0] == W[1] ? null : g.teams[W[0] > W[1] ? 0 : 1];
+};
+
+// Navigate to a view. Cancels any video render that is still running.
+const go = (x, id) => {
+  if (job) job.cancel();
+  v = x;
+  if (id) gid = id;
+  if (x == 'live' && live()) gid = live().id;
+  draw();
+};
+
+/* =====================================================================
+   2. DIALOGS
+   ===================================================================== */
+
+// Show a modal with HTML `h` and a row of buttons labelled by array `b`.
+// Resolves to [indexOfButtonTapped, modalElement] (the element lets callers read inputs).
+function M(h, b) {
+  return new Promise(r => {
+    const d = document.createElement('div');
+    d.className = 'md';
+    d.innerHTML = '<div class="bx">' + h + '<div class="bt">' +
+      b.map((x, i) => `<button data-i="${i}">${x}</button>`).join('') + '</div></div>';
+    d.onclick = e => {
+      const i = e.target.dataset.i;
+      if (i != null) { d.remove(); r([+i, d]); }
+    };
+    document.body.append(d);
+  });
+}
+
+// Confirmation dialog: resolves true if the first button (label l) was tapped.
+const yes = async (t, l = 'Confirm') => (await M(t, [l, 'Cancel']))[0] == 0;
+
+// "Who is serving?" dialog. Resolves to the team id, or null if cancelled.
+async function server(t) {
+  const i = (await M('Who is serving?', [esc(t[0].name), esc(t[1].name), 'Cancel']))[0];
+  return i > 1 ? null : t[i].id;
+}
+
+/* =====================================================================
+   3. LIVE GAME ACTIONS (the scoring screen)
+   ===================================================================== */
+
+// Edit a team's name/color. Works on the live game, the not-yet-started draft, or a saved game.
+async function editTeam(i) {
+  const g = live() && v == 'live' ? live() : v == 'live' ? draft : G();
+  const t = g.teams[i];
+  const [b, d] = await M(
+    `<input type="text" value="${esc(t.name)}"><input type="color" value="${t.color}">`,
+    ['Save', 'Cancel']);
+  if (b == 0) {
+    t.name = d.querySelector('input[type=text]').value.trim() || t.name;
+    t.color = d.querySelector('input[type=color]').value;
+    save(); draw();
+  }
+}
+
+// "Start match": ask who serves, then create the game with its first set.
+async function start() {
+  const T = draft.teams, s = await server(T);
+  if (!s) return;
+  const n = Date.now();
+  const g = {
+    id: n, version: 2,
+    teams: JSON.parse(JSON.stringify(T)),      // copy so later edits to the draft don't leak in
+    start: n, end: null,
+    sets: [{ start: n, end: null, server: s, points: [] }]
+  };
+  db.games.push(g); save();
+  gid = n; draw();
+}
+
+// Tap on team i's score: record a point now.
+function pt(i) {
+  const L = live(), s = openSet(L);
+  if (!s) return;
+  s.points.push({ t: Date.now(), team: L.teams[i].id });
+  save(); draw();
+}
+
+// Swipe down on team i's score: remove that team's most recent point in the open set.
+function undo(i) {
+  const L = live(), s = openSet(L);
+  if (!s) return;
+  for (let j = s.points.length - 1; j >= 0; j--) {
+    if (s.points[j].team == L.teams[i].id) { s.points.splice(j, 1); break; }
+  }
+  save(); draw();
+}
+
+// Close the current set (with confirmation).
+async function endSet() {
+  if (await yes('End this set?', 'End set')) { last(live()).end = Date.now(); save(); draw(); }
+}
+
+// Start another set (asks who serves).
+async function nextSet() {
+  const g = live(), s = await server(g.teams);
+  if (!s) return;
+  g.sets.push({ start: Date.now(), end: null, server: s, points: [] });
+  save(); draw();
+}
+
+// Close the game and jump straight to its overview page.
+async function endGame() {
+  if (await yes('End the game?', 'End game')) {
+    const g = live();
+    g.end = Date.now(); save();
+    gid = g.id; v = 'detail'; draw();
+  }
+}
+
+// Delete the selected game (with confirmation).
+async function del() {
+  if (await yes('Delete this game permanently?', 'Delete')) {
+    db.games = db.games.filter(g => g.id != gid);
+    save(); go('hist');
+  }
+}
+
+/* =====================================================================
+   4. RECORD EDITING (timeline page)
+   Rules enforced here: sets never overlap; a point must stay inside its set;
+   the game's end always contains every set.
+   ===================================================================== */
+
+// Move a whole set (start, end and all its points) by d milliseconds.
+const shift = (s, d) => {
+  s.start += d;
+  if (s.end) s.end += d;
+  s.points.forEach(p => p.t += d);
+};
+
+// Edit a set's length / serving team. The dialog re-opens after each change until "Done".
+async function editSet(si) {
+  const g = G(), s = g.sets[si];
+  if (!s.end) return alert('Finish the set first.');
+  const lp = s.points.reduce((m, p) => Math.max(m, p.t), s.start);  // time of the set's last point
+  const nx = g.sets[si + 1];                                         // following set, if any
+  const [b] = await M(
+    `<b>Set ${si + 1}</b><br>Duration ${F(s.end - s.start)}<br>Serving: ${esc(tm(g, s.server).name)}`,
+    ['-10s', '+10s', '-1m', '+1m', 'Swap server', 'Done']);
+  if (b == 4) { s.server = g.teams.find(t => t.id != s.server).id; save(); return editSet(si); }
+  if (b == 5) return draw();
+
+  const d = [-1e4, 1e4, -6e4, 6e4][b];   // change in set length (ms)
+  const ne = s.end + d;                  // proposed new end time
+
+  // A set can't end before its own last point.
+  if (ne < lp) {
+    alert('Set cannot end before its last point (' + F(lp - s.start) + ').');
+    return editSet(si);
+  }
+  // Overlap with the next set: confirm, then push every later set out by the overlap.
+  if (nx && ne > nx.start) {
+    if (!await yes(`This overlaps set ${si + 2}. It and all following sets will move later by ${Math.ceil((ne - nx.start) / 1000)}s.`, 'Shift later sets'))
+      return editSet(si);
+    const o = ne - nx.start;
+    for (let j = si + 1; j < g.sets.length; j++) shift(g.sets[j], o);
+  }
+  s.end = ne;
+  const le = last(g).end;
+  if (g.end < le) g.end = le;            // game end must still contain the last set
+  save(); editSet(si);
+}
+
+// Edit one point: nudge its time, reassign to the other team, or delete. Re-opens until "Done".
+async function editPt(si, pi) {
+  const g = G(), s = g.sets[si], p = s.points[pi];
+  const [b] = await M(
+    `<b>Set ${si + 1} point</b><br>${esc(tm(g, p.team).name)} at ${F(p.t - s.start)}`,
+    ['-1s', '+1s', '-5s', '+5s', 'Reassign', 'Delete', 'Done']);
+  if (b == 6) return draw();
+  if (b == 5) { s.points.splice(pi, 1); save(); return draw(); }
+  if (b == 4) { p.team = g.teams.find(t => t.id != p.team).id; save(); return editPt(si, pi); }
+
+  const nt = p.t + [-1e3, 1e3, -5e3, 5e3][b];   // proposed new time
+  if (nt < s.start || nt > (s.end || Date.now())) {
+    alert('A point must stay inside its set.');
+    return editPt(si, pi);
+  }
+  p.t = nt;
+  s.points.sort((a, b) => a.t - b.t);           // keep points in time order
+  save();
+  editPt(si, s.points.indexOf(p));
+}
+
+// "+ Add set": append a 5-minute set right after the last one (asks who serves).
+async function addSet() {
+  const g = G(), s = await server(g.teams);
+  if (!s) return;
+  const st = last(g).end || g.end, e = st + 3e5;      // 3e5 ms = 5 minutes (change the default here)
+  g.sets.push({ start: st, end: e, server: s, points: [] });
+  if (g.end < e) g.end = e;                          // extend the game so it still contains the set
+  save(); draw();
+}
+
+// "+ Point" on a set: pick a team; the point is placed 1s after the set's last point
+// (capped at the set's end), then the point editor opens so the time can be nudged.
+async function addPt(si) {
+  const g = G(), s = g.sets[si];
+  const [b] = await M('Add point to set ' + (si + 1), [esc(g.teams[0].name), esc(g.teams[1].name), 'Cancel']);
+  if (b > 1) return;
+  const lp = s.points.length ? s.points[s.points.length - 1].t : s.start;
+  const p = { t: Math.min(lp + 1e3, s.end), team: g.teams[b].id };
+  s.points.push(p);
+  s.points.sort((a, c) => a.t - c.t);
+  save();
+  editPt(si, s.points.indexOf(p));
+}
+
+/* =====================================================================
+   5. HTML BUILDING BLOCKS
+   ===================================================================== */
+
+// ---- 7-segment LCD digits for the live score ----
+// Each string is the polygon of one segment, in the order a b c d e f g
+// (a=top, b=top-right, c=bottom-right, d=bottom, e=bottom-left, f=top-left, g=middle).
+const SG = [
+  '12,2 48,2 54,8 48,14 12,14 6,8',
+  '54,10 60,16 60,40 54,46 48,40 48,16',
+  '54,54 60,60 60,84 54,90 48,84 48,60',
+  '12,86 48,86 54,92 48,98 12,98 6,92',
+  '6,54 12,60 12,84 6,90 0,84 0,60',
+  '6,10 12,16 12,40 6,46 0,40 0,16',
+  '12,44 48,44 54,50 48,56 12,56 6,50'
+];
+// Which segments are lit for digits 0-9.
+const DM = ['abcdef', 'bc', 'abdeg', 'abcdg', 'bcfg', 'acdfg', 'acdefg', 'abc', 'abcdefg', 'abcdfg'];
+
+// One digit n drawn at horizontal offset x. Lit = bright green, unlit = faint ghost segment.
+const dig = (n, x) => SG.map((p, i) =>
+  `<polygon points="${p}" transform="translate(${x} 0)" fill="${DM[n].includes('abcdefg'[i]) ? '#39ff14' : '#39ff1415'}"/>`
+).join('');
+
+// Two-digit number as an SVG (slightly slanted, with a soft glow). Shows the last two digits if n > 99.
+const seg = n =>
+  `<svg viewBox="-2 -2 138 104" style="width:90%;height:auto;transform:skewX(-6deg);filter:drop-shadow(0 0 6px #39ff1466)" aria-hidden="true">${dig(n / 10 % 10 | 0, 0)}${dig(n % 10, 74)}</svg>`;
+
+// Finished-set results shown under the buttons on the live screen: "● Set 1: 25 - 23".
+const res = g =>
+  `<div style="display:flex;flex-wrap:wrap;gap:8px 14px;justify-content:center;padding:0 12px 6px;font-size:14px">${
+    g.sets.filter(s => s.end).map(s => {
+      const w = setWin(g, s);   // winner's color for the dot (transparent if tied)
+      return `<span style="display:inline-flex;align-items:center;gap:6px"><span class="ch" style="border-radius:50%;width:12px;height:12px;background:${w ? w.color : 'transparent'}"></span>Set ${g.sets.indexOf(s) + 1}: ${scs(g, s)}</span>`;
+    }).join('')
+  }</div>`;
+
+// "Break" row shown on the timeline between set i and set i+1 (only if there is a gap).
+const brk = (g, i) => {
+  const a = g.sets[i], b = g.sets[i + 1];
+  return b && a.end && b.start > a.end
+    ? `<div class="row" style="cursor:default;opacity:.75">☕ <span class="g">Break <span class="mu">${F(a.end - g.start)} – ${F(b.start - g.start)}</span></span><b>${F(b.start - a.end)}</b></div>`
+    : '';
+};
+
+// Highlight the chosen style card on the video page.
+function pick(i) {
+  sel = i;
+  [0, 1].forEach(j => {
+    document.getElementById('c' + j).parentElement.style.outline =
+      j == i ? '2px solid var(--ac)' : '2px solid transparent';
+  });
+}
+
+/* =====================================================================
+   6. VIEWS  (each returns an HTML string; draw() picks one)
+   ===================================================================== */
+
+// ---- Home ----
+function viewHome() {
+  const l = live();
+  return `<div class="pg hm"><h1>🏐 Volley Tracker</h1>
+    ${l ? '<button class="p" onclick="go(\'live\')">Continue game</button>'
+        : '<button class="p" onclick="go(\'live\')">New game</button>'}
+    <button onclick="go('hist')">Previous games</button></div>`;
+}
+
+// ---- Live scoring screen (also the pre-game "new game" screen when nothing is running) ----
+function viewLive() {
+  const L = live();                       // game in progress, or undefined before the match starts
+  const T = L ? L.teams : draft.teams;    // teams to show
+  const s = openSet(L);                   // set being played, or null between sets
+  // Score shown for team i: open set -> its points; between sets -> last set's points; before start -> 0
+  const score = i => s ? sc(s, T[i].id) : L ? sc(last(L), T[i].id) : 0;
+  // Buttons depend on state: not started / set running / between sets
+  const buttons = !L
+    ? '<button class="p" onclick="start()">Start match</button>'
+    : s
+      ? '<button class="p" onclick="endSet()">End set</button>'
+      : '<button class="p" onclick="nextSet()">Start next set</button><button class="d" onclick="endGame()">End game</button>';
+  return `<div class="lv"><div class="tp">${
+    [0, 1].map(i =>
+      `<div class="tm"><div class="nm" onclick="editTeam(${i})"><span class="ch" style="background:${T[i].color}"></span>${esc(T[i].name)}</div><div class="sc" data-i="${i}">${seg(score(i))}</div></div>`
+    ).join('')
+  }</div>
+  <div class="bt lb"><div id="tmr">${F(L && !L.end ? Date.now() - L.start : 0)}</div><div class="r">${buttons}<button onclick="go('home')">Home</button></div>${L ? res(L) : ''}</div></div>`;
+}
+
+// ---- Previous games list (finished games only, newest first) ----
+function viewHist() {
+  const rows = [...db.games].filter(x => x.end).sort((a, b) => b.start - a.start).map(x =>
+    `<div class="row" onclick="go('detail',${x.id})"><div class="g"><b>${esc(x.teams[0].name)} vs ${esc(x.teams[1].name)}</b><div class="mu">${new Date(x.start).toLocaleString()}</div></div>›</div>`
+  ).join('');
+  return `<div class="pg"><div class="nav"><button onclick="go('home')">Back</button></div><h2>Previous games</h2>` +
+    (rows || '<p class="mu">No finished games yet.</p>') + '</div>';
+}
+
+// ---- Game overview: teams (tap to edit), per-set results, action buttons ----
+function viewDetail(g) {
+  const teams = g.teams.map((t, i) =>
+    `<div class="row" onclick="editTeam(${i})"><span class="ch" style="background:${t.color}"></span><b>${esc(t.name)}</b>${gw(g) == t ? ' <b style="font-size:12px;color:var(--ac)">Winner</b>' : ''}</div>`
+  ).join('');
+  const sets = g.sets.map((s, i) => {
+    const w = setWin(g, s);   // circle in the winner's color
+    return `<div class="row"><span class="ch" style="border-radius:50%;background:${w ? w.color : 'transparent'}"></span><div class="g">Set ${i + 1}</div><b>${scs(g, s)}</b></div>`;
+  }).join('');
+  return `<div class="pg"><div class="nav"><button onclick="go('hist')">Back</button></div><h2>Overview</h2><div class="mu">${new Date(g.start).toLocaleString()}</div>
+    ${teams}
+    ${sets}
+    <div class="nav" style="margin-top:12px"><button onclick="go('edit')">Edit record</button><button onclick="go('video')">Create video</button><button onclick="go('raw')">Raw data</button><button class="d" onclick="del()">Delete</button></div></div>`;
+}
+
+// ---- Timeline editor: each set, its points, and the breaks between sets ----
+function viewEdit(g) {
+  const body = g.sets.map((s, i) => {
+    const header = `<div class="row" style="cursor:default"><div class="g"><b>Set ${i + 1} (${scs(g, s)}) serve: ${esc(tm(g, s.server).name)}</b><div class="mu">${F(s.start - g.start)} – ${F((s.end || g.end) - g.start)} · ${F((s.end || g.end) - s.start)}</div></div><button onclick="addPt(${i})">+ Point</button><button onclick="editSet(${i})">Edit</button></div>`;
+    const points = s.points.map((p, j) =>
+      `<div class="row" style="cursor:default;margin-left:16px"><span class="ch" style="background:${tm(g, p.team).color}"></span><span class="g">${esc(tm(g, p.team).name)} <span class="mu">${F(p.t - s.start)}</span></span><button onclick="editPt(${i},${j})">Edit</button></div>`
+    ).join('');
+    return header + points + brk(g, i);
+  }).join('');
+  return `<div class="pg"><div class="nav"><button onclick="go('detail')">Back</button></div><h2>Timeline</h2>` +
+    body + '<button class="p" style="width:100%;margin-top:12px" onclick="addSet()">+ Add set</button></div>';
+}
+
+// ---- Raw data: the game record as JSON (copy or download) ----
+// (kept on ONE line: whitespace inside <pre> would show up on screen)
+function viewRaw(g) {
+  return `<div class="pg"><div class="nav"><button onclick="go('detail')">Back</button><button class="p" onclick="navigator.clipboard.writeText(JSON.stringify(G(),null,2))">Copy</button><button onclick="dl()">Download</button></div><pre>${esc(JSON.stringify(g, null, 2))}</pre></div>`;
+}
+
+// ---- Video page: style previews + render button ----
+function viewVideo() {
+  const cards = [0, 1].map(i =>
+    `<div class="row" style="outline:${sel == i ? '2px solid var(--ac)' : '2px solid transparent'}" onclick="pick(${i})"><canvas id="c${i}" width="700" height="190"></canvas></div>`
+  ).join('');
+  const warn = can() ? '' : '<p style="color:#ff6b6b">Video rendering is not available in this browser. You can still export the raw data.</p>';
+  return `<div class="pg"><div class="nav"><button onclick="go('detail')">Back</button></div><h2>Score board video</h2><p class="mu">Pick a style (previews show the final score), then render. Output is a transparent WebM, encoded on-device much faster than real time.</p>${cards}${warn}<button class="p" style="width:100%" ${can() ? '' : 'disabled'} onclick="rec()">Render video</button><p id="pr" class="mu"></p><div id="out"></div></div>`;
+}
+
+/* =====================================================================
+   7. DRAW  -  rebuilds the current view
+   ===================================================================== */
+function draw() {
+  clearInterval(draw.i);             // stop the live timer from the previous draw
+  const g = G();                     // selected game (may be undefined)
+  let h = '';
+
+  if (v == 'home') h = viewHome();
+  else if (v == 'live') {
+    h = viewLive();
+    // Update the timer text 4x/second without redrawing the whole screen.
+    const L = live();
+    draw.i = setInterval(() => {
+      const e = document.getElementById('tmr');
+      if (e) e.textContent = F(L && !L.end ? Date.now() - L.start : 0);
+    }, 250);
+  }
+  else if (v == 'hist') h = viewHist();
+  else if (g && v == 'detail') h = viewDetail(g);
+  else if (g && v == 'edit') h = viewEdit(g);
+  else if (g && v == 'raw') h = viewRaw(g);
+  else if (g && v == 'video') h = viewVideo();
+
+  A.innerHTML = h;
+
+  if (v == 'live') bind();   // attach tap / swipe handling to the score digits
+
+  // Video page: paint a preview of each overlay style using the game's final score.
+  // translate(-20,-20) crops the empty margin so the small canvas shows just the board.
+  if (g && v == 'video') {
+    [0, 1].forEach(i => {
+      const x = document.getElementById('c' + i).getContext('2d');
+      x.translate(-20, -20);
+      sb(x, g, g.end, i);
+    });
+  }
+}
+
+// Tap = +1 point, swipe down (more than 40px) = remove last point. Uses pointer events on #app.
+function bind() {
+  let y0, el;
+  A.onpointerdown = e => { el = e.target.closest('.sc'); y0 = e.clientY; };
+  A.onpointerup = e => {
+    const s = e.target.closest('.sc');
+    if (!s || s != el) return;
+    const i = +s.dataset.i;
+    e.clientY - y0 > 40 ? undo(i) : pt(i);
+  };
+}
+
+/* =====================================================================
+   8. EXPORT AND VIDEO
+   ===================================================================== */
+
+// Save/share a file. On phones that support it this opens the share sheet
+// ("Save to Files"); otherwise it falls back to a normal browser download.
+async function saveFile(data, name) {
+  try {
+    const f = new File([data], name, { type: data.type });
+    if (navigator.canShare && navigator.canShare({ files: [f] })) {
+      await navigator.share({ files: [f], title: name });
+      return;
+    }
+  } catch (e) {
+    if (e.name == 'AbortError') return;   // user closed the share sheet
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(data);
+  a.download = name;
+  document.body.append(a); a.click(); a.remove();
+}
+
+// "Download" button on the Raw data page.
+function dl() {
+  saveFile(new Blob([JSON.stringify(G(), null, 2)], { type: 'application/json' }), 'game-' + G().id + '.json');
+}
+
+// Is on-device video rendering possible? Needs the vendored library and the browser's WebCodecs encoder.
+const can = () => !!(window.Mediabunny && window.VideoEncoder);
+
+// What the scoreboard should show at absolute time t:
+//   w = sets won by each team (a set counts once it has ended, for whichever team had more points)
+//   n = each team's points in the current set up to time t
+//   i = current set number
+function state(g, t) {
+  let w = [0, 0], cur = null;
+  g.sets.forEach(s => {
+    if (s.start <= t) {
+      cur = s;
+      if (s.end && s.end <= t) {
+        const a = sc(s, g.teams[0].id), b = sc(s, g.teams[1].id);
+        if (a != b) w[a > b ? 0 : 1]++;
+      }
+    }
+  });
+  const s = cur || g.sets[0];
+  return {
+    w,
+    n: g.teams.map(T => s.points.filter(p => p.team == T.id && p.t <= t).length),
+    i: g.sets.indexOf(s) + 1
+  };
+}
+
+// Filled rounded rectangle on canvas context x.
+function rr(x, a, b, w, h, r) { x.beginPath(); x.roundRect(a, b, w, h, r); x.fill(); }
+
+// Draw ONE scoreboard frame onto canvas context x (1280x720, transparent background).
+//   g = game, t = absolute time to show, st = style (0 = horizontal bar, 1 = stacked card)
+// To add a style: add another branch here, another preview card in viewVideo(), and update pick().
+function sb(x, g, t, st) {
+  const S = state(g, t);
+  x.clearRect(0, 0, 1280, 720);
+  x.textBaseline = 'middle';
+  if (!st) {
+    // ---- Style 0: one horizontal bar, team 1 on the left, team 2 on the right ----
+    x.fillStyle = '#000c';
+    rr(x, 30, 30, 640, 70, 14);                                   // translucent black bar
+    [0, 1].forEach(i => {
+      const X = 40 + i * 320;                                      // left edge of this team's half
+      x.fillStyle = g.teams[i].color; rr(x, X, 40, 10, 50, 4);     // team color stripe
+      x.fillStyle = '#fff'; x.font = '600 26px sans-serif'; x.textAlign = 'left';
+      x.fillText(g.teams[i].name.slice(0, 12), X + 22, 65);        // team name (max 12 chars)
+      x.font = '800 38px sans-serif'; x.textAlign = 'right';
+      x.fillText(S.n[i], X + 270, 65);                             // current set score
+      x.font = '20px sans-serif'; x.fillStyle = '#ffd23f';
+      x.fillText('•'.repeat(S.w[i]), X + 300, 65);                 // one yellow dot per set won
+    });
+  } else {
+    // ---- Style 1: stacked card, one row per team ----
+    x.fillStyle = '#000c';
+    rr(x, 30, 30, 330, 130, 14);                                   // translucent black card
+    [0, 1].forEach(i => {
+      const Y = 40 + i * 55;                                       // top of this team's row
+      x.fillStyle = g.teams[i].color; rr(x, 40, Y, 12, 45, 4);     // team color stripe
+      x.fillStyle = '#fff'; x.font = '600 24px sans-serif'; x.textAlign = 'left';
+      x.fillText(g.teams[i].name.slice(0, 12), 62, Y + 23);        // team name
+      x.fillStyle = '#ffd23f'; x.font = '700 22px sans-serif';
+      x.fillText(S.w[i], 240, Y + 23);                             // sets won (yellow number)
+      x.fillStyle = '#fff'; x.font = '800 36px sans-serif'; x.textAlign = 'right';
+      x.fillText(S.n[i], 345, Y + 23);                             // current set score
+    });
+  }
+}
+
+// Render the overlay to a transparent WebM, much faster than real time.
+// Idea: a scoreboard only changes at events, so instead of filming the whole match we encode
+// one frame at every point / set start / set end, plus a refresh frame every 10 s.
+// Each frame is stamped with its true time offset and duration, so playback timing matches the game.
+async function rec() {
+  if (job) job.cancel();                       // only one render at a time
+  let dead = false;                            // set to true if the user cancels / leaves the page
+  const me = job = { cancel() { dead = true; } };
+  const st = sel, g = G();
+  const pr = document.getElementById('pr'), o = document.getElementById('out');
+  o.innerHTML = '';
+
+  if (window.Mediabunny && window.VideoEncoder) {
+    try {
+      const { Output, WebMOutputFormat, BufferTarget, CanvasSource } = Mediabunny;
+      const c = document.createElement('canvas'); c.width = 1280; c.height = 720;
+      const x = c.getContext('2d');
+      const out = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
+      // VP9 with alpha='keep' => transparent background. Raise bitrate for higher quality.
+      const src = new CanvasSource(c, { codec: 'vp9', bitrate: 2e6, alpha: 'keep', keyFrameInterval: 2 });
+      out.addVideoTrack(src);
+      await out.start();
+
+      // Times (ms) at which to emit a frame: game start, every set start/end, every point, every 10 s.
+      const T = new Set([g.start]);
+      g.sets.forEach(s => {
+        T.add(s.start);
+        if (s.end) T.add(s.end);
+        s.points.forEach(p => T.add(p.t));
+      });
+      for (let t = g.start; t < g.end; t += 1e4) T.add(t);
+      const ts = [...T].filter(t => t >= g.start && t < g.end).sort((a, b) => a - b);
+
+      for (let i = 0; i < ts.length; i++) {
+        if (dead) { try { await out.cancel(); } catch (e) {} return; }
+        sb(x, g, ts[i], st);                                          // draw the board as of ts[i]
+        // timestamp and duration are in seconds; a frame lasts until the next frame (or game end)
+        await src.add((ts[i] - g.start) / 1e3, ((ts[i + 1] || g.end) - ts[i]) / 1e3);
+        if (i % 8 == 0) {                                             // update progress, let the UI breathe
+          pr.textContent = 'Rendering ' + Math.round(i / ts.length * 100) + '%';
+          await new Promise(r => setTimeout(r));
+        }
+      }
+      await out.finalize();
+      job = null;
+      pr.textContent = 'Done.';
+      vid = new Blob([out.target.buffer], { type: 'video/webm' });
+      o.innerHTML = `<button class="p" onclick="saveFile(vid,'scoreboard.webm')">Save video</button>`;
+    } catch (e) {
+      if (dead) return;
+      job = null;
+      pr.textContent = 'Could not render the video on this device: ' + e.message + '. The game data can still be exported from the Raw data page.';
+    }
+  } else {
+    job = null;
+    pr.textContent = window.Mediabunny
+      ? 'This browser cannot encode video on-device, so the video cannot be made here. Export the raw data instead.'
+      : 'The video library did not load, so the video cannot be made right now.';
+  }
+}
+
+/* =====================================================================
+   9. STARTUP
+   ===================================================================== */
+
+// Ask for portrait lock (works in installed apps on some browsers; ignored elsewhere).
+try { screen.orientation.lock('portrait'); } catch (e) {}
+
+// Register the service worker (sw.js) so the app works offline after the first visit.
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// Load the video library (vendored copy built by the GitHub workflow).
+// If the user is already on the video page when it finishes loading, redraw so Render becomes active.
+import('./vendor/mediabunny.js')
+  .then(m => { window.Mediabunny = m; if (v == 'video' && !job) draw(); })
+  .catch(e => console.warn('Mediabunny failed to load', e));
+
+draw();   // show the home screen
+</script>
+</body>
+</html>

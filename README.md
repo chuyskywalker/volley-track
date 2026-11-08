@@ -36,7 +36,7 @@ Because the recorded data is just timestamps, it can also be corrected afterward
 
 **Live scoring**
 - Tap a team's score to add a point. Swipe down on a score to remove that team's last point.
-- Large green 7-segment style digits, team names and color chips (tap to edit).
+- Large green 7-segment style digits, team names and color chips (tap a team to edit its name, color, and optional overlay name and 3-letter code).
 - Running match timer, serving-team prompt at the start of each set, confirmation before ending a set or the game.
 - Finished set results appear under the buttons as the match goes on.
 - Keeps the screen awake while a game is being scored (where the browser supports it).
@@ -48,6 +48,7 @@ Because the recorded data is just timestamps, it can also be corrected afterward
 **Record editing**
 - Timeline of every set with its start, end, duration and points, with the break between sets shown.
 - Add or remove time from a set, swap the serving team, add a set, add a point.
+- **Sync points:** shift every point in the game earlier or later by a few seconds, to fix the usual lag between a rally ending and the score being tapped. Points stay inside their own set.
 - Edit a point: move it by seconds, reassign it to the other team, or delete it.
 - Timeline consistency is protected: sets cannot overlap, points must stay inside their set, and extending a set into the next one asks before shifting every later set.
 
@@ -62,7 +63,7 @@ Because the recorded data is just timestamps, it can also be corrected afterward
 
 ## Overlay styles
 
-The overlay video is 1280×720 with a transparent background.
+The overlay video is 1920×1080 (full HD) with a transparent background. It scales cleanly onto higher-resolution footage such as 4K.
 
 ![All six overlay styles over mock footage](docs/screenshots/08-overlay-styles.png)
 
@@ -86,7 +87,7 @@ Everything the app stores follows this shape (this is what **Raw data** shows, a
   "id": 1759516200000,
   "version": 2,
   "teams": [
-    { "id": "t_k3x9ab", "name": "Harbor Hawks",  "color": "#1d6fe0" },
+    { "id": "t_k3x9ab", "name": "Harbor Hawks",  "color": "#1d6fe0", "code": "HAR" },
     { "id": "t_p7m2qz", "name": "Ridge Runners", "color": "#e63946" }
   ],
   "start": 1759516200000,
@@ -107,6 +108,7 @@ Everything the app stores follows this shape (this is what **Raw data** shows, a
 
 - All times are **absolute epoch milliseconds**. The app shows them relative to the game or set start.
 - Teams have explicit ids. Points and the serving team refer to a team by id, never by position.
+- `short` (overlay name, max 12 characters) and `code` (3-letter code) are optional per-team fields. When missing, the overlays use the first 12 characters and the first 3 letters of the name.
 - `end` is `null` while a game or set is still in progress.
 - A backup file wraps a list of these records: `{ "app": "VolleyTrack", "type": "backup", "version": 2, "exported": "...", "games": [ ... ] }`. Restore accepts either a backup file or a single game record.
 
@@ -135,7 +137,7 @@ Files in the repository root: `index.html` (the whole app), `manifest.webmanifes
 - **Video rendering needs a browser with WebCodecs video encoding.** Rendering and saving has been tested in a recent Firefox. Other current desktop and Android browsers should work but are untested, and iPhone Safari is the biggest unknown. If rendering isn't available, the page says so and you can still export the raw data.
 - **Transparent WebM support varies between video editors.** If your editor shows a black background, convert the file first, for example with FFmpeg: `ffmpeg -c:v libvpx-vp9 -i scoreboard.webm -c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le scoreboard.mov`.
 - **No automatic volleyball rules.** The app does not enforce 25 points, 15 in the deciding set, or win-by-two. A set's winner is simply the team with more points when you end the set (a tie has no winner).
-- **Overlay text is shortened.** Team names are cut to 12 characters in the overlays, and the three-letter codes (`HAR`, `RID`) are the first three letters of the name.
+- **Overlay text is short.** The overlays show each team's overlay name (up to 12 characters) and 3-letter code. Both are filled in automatically from the team name, and you can set your own when editing a team.
 - **One game can be in progress at a time.**
 - **Portrait lock.** iPhone does not allow web apps to lock the orientation, which is why a "turn your phone upright" cover is shown in landscape. Android honors the portrait setting in an installed app.
 - **Keeping the screen awake** uses the browser's Wake Lock feature. As far as I know, iPhone supports it in installed home-screen apps only from iOS 18.4 onward.

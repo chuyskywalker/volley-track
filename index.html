@@ -29,7 +29,9 @@
   DATA MODEL (what "Raw data" shows)
   game = {
     id: <ms timestamp of start>,   version: 2,
-    teams: [ {id, name, color}, {id, name, color} ],   // array order = left/right on screen
+    teams: [ {id, name, color, short?, code?}, {...} ],   // array order = left/right on screen
+                  // short = optional overlay name (max 12 chars), code = optional 3-letter code;
+                  // when missing the overlays use the first 12 chars / first 3 letters of name
     start: <ms>, end: <ms or null while in progress>,
     sets: [ { start: <ms>, end: <ms or null while open>, server: <team id>,
               points: [ { t: <ms>, team: <team id> } ] } ]
@@ -136,7 +138,17 @@ h1, h2 { margin: 0 0 12px; }
   width: 100%; padding: 10px; font-size: 18px; border-radius: 8px;
   border: 1px solid #2c3442; background: var(--bg); color: var(--tx);
 }
-.bx input[type=color] { width: 100%; height: 44px; margin-top: 10px; border: 0; background: none; }
+.bx label { display: block; margin: 12px 0 4px; }
+.bx label:first-child { margin-top: 0; }
+/* Color picker: iPhone draws a stretched circle by default, so reset it to a full-width rounded box. */
+.bx input[type=color] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 44px; padding: 0;
+  border: 1px solid #2c3442; border-radius: 8px; background: none;
+}
+.bx input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+.bx input[type=color]::-webkit-color-swatch { border: 0; border-radius: 7px; }
+.bx input[type=color]::-moz-color-swatch { border: 0; border-radius: 7px; }
 
 /* ---------- Misc ---------- */
 pre { background: var(--card); padding: 12px; border-radius: 12px; overflow: auto; font-size: 12px; max-height: 55vh; }
@@ -146,15 +158,8 @@ canvas {  /* checkerboard behind canvases so transparency is visible in previews
 }
 .nav { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }  /* row of buttons at the top of a page */
 
-/* Video page: status text + Render/Save buttons stay pinned to the bottom of the screen */
-.vbar { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid #2c3442; margin-top: 12px; padding: 12px 0 16px; }
-.vbar .r2 { display: flex; gap: 10px; margin-top: 8px; }
-.vbar .r2 button { flex: 1; }
-
-/* Phones can't be locked to portrait in every browser (iPhone ignores the lock),
-   so when a touch device is turned sideways we cover the screen with a reminder. */
-#rot { display: none; position: fixed; inset: 0; z-index: 99; background: var(--bg); align-items: center; justify-content: center; text-align: center; font-size: 20px; padding: 24px; }
-@media (orientation: landscape) and (pointer: coarse) and (max-height: 600px) { #rot { display: flex; } }
+/* "N games since last backup": amber pill button, pushed to the right of the Back row */
+.bk { margin-left: auto; background: #33270a; border: 1px solid #ffb703; color: #ffd166; font-weight: 600; font-size: 14px; border-radius: 999px; padding: 9px 14px; }
 </style>
 </head>
 <body>
@@ -173,9 +178,38 @@ let db;
 try { db = JSON.parse(localStorage.vb2); } catch (e) {}
 db = db || { games: [] };
 
+let persisted = null;   // did the browser grant "persistent storage"? (null = unknown yet)
+let lastWarn = 0;       // when the last save-failure warning was shown (ms)
+
 // Persist db. Call after every change to a game.
+// If the browser refuses (storage full or blocked) warn the user, at most once a minute.
 const save = () => {
-  try { localStorage.vb2 = JSON.stringify(db); } catch (e) {}
+  try { localStorage.vb2 = JSON.stringify(db); }
+  catch (e) {
+    if (Date.now() - lastWarn > 60000) {
+      lastWarn = Date.now();
+      alert('WARNING: the latest changes could NOT be saved on this device (storage may be full or blocked). Download a backup now from Previous games, then free up space.');
+    }
+  }
+};
+
+// ---- Backup tracking ----
+// db.backup = { at: <ms of last backup or null>, sig: { <gameId>: <fingerprint when last backed up> } }.
+// A game counts as "not backed up" if it is new or has been edited since (its fingerprint changed).
+const sig = g => {
+  const s = JSON.stringify(g);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (h * 33 ^ s.charCodeAt(i)) >>> 0;
+  return h;
+};
+// Finished games that are new or changed since the last backup.
+const unsavedCount = () => db.games.filter(g => g.end && !(db.backup && db.backup.sig && db.backup.sig[g.id] === sig(g))).length;
+// "3 games since last backup"  (or "... not backed up yet" if no backup was ever made)
+const unsavedText = n => (n == 1 ? '1 game' : n + ' games') + (db.backup && db.backup.at ? ' since last backup' : ' not backed up yet');
+// Remember that game g is safely stored in a backup file.
+const markSaved = g => {
+  db.backup = db.backup || { at: null, sig: {} };
+  db.backup.sig[g.id] = sig(g);
 };
 
 // P = zero-pad to 2 digits.  F = milliseconds -> "HH:MM:SS".
@@ -214,7 +248,13 @@ const openSet = g => g && g.sets.length && !last(g).end ? last(g) : null;
 
 // ---- Score helpers ----
 const sc = (s, id) => s.points.filter(p => p.team == id).length;      // points a team has in set s
-const tm = (g, id) => g.teams.find(t => t.id == id);                  // team object from its id
+const tm = (g, id) => g.teams.find(t => t.id == id);
+// Default overlay name (first 12 characters) and code (first 3 letters, capitals) for a team name.
+const defShort = n => n.trim().slice(0, 12);
+const defCode = n => n.trim().slice(0, 3).toUpperCase();
+// What the video overlays actually show for a team: its custom short name / code if set, else the defaults.
+const tn = t => (t.short || defShort(t.name)).slice(0, 12);
+const tc = t => (t.code || defCode(t.name)).toUpperCase().slice(0, 3);                  // team object from its id
 const scs = (g, s) => g.teams.map(t => sc(s, t.id)).join(' - ');      // "25 - 23"
 // Winner of a set = whoever has more points when it is viewed (null if tied).
 const setWin = (g, s) => {
@@ -243,7 +283,7 @@ const go = (x, id) => {
 
 // Show a modal with HTML `h` and a row of buttons labelled by array `b`.
 // Resolves to [indexOfButtonTapped, modalElement] (the element lets callers read inputs).
-function M(h, b) {
+function M(h, b, init) {
   return new Promise(r => {
     const d = document.createElement('div');
     d.className = 'md';
@@ -254,6 +294,7 @@ function M(h, b) {
       if (i != null) { d.remove(); r([+i, d]); }
     };
     document.body.append(d);
+    if (init) init(d);   // lets the caller attach handlers to inputs inside the dialog
   });
 }
 
@@ -270,16 +311,36 @@ async function server(t) {
    3. LIVE GAME ACTIONS (the scoring screen)
    ===================================================================== */
 
-// Edit a team's name/color. Works on the live game, the not-yet-started draft, or a saved game.
+// Edit a team: full name, overlay name (max 12 chars), overlay code (3 letters) and color.
+// Works on the live game, the not-yet-started draft, or a saved game.
+// The overlay fields fill themselves in from the team name until you type in them yourself.
 async function editTeam(i) {
   const g = live() && v == 'live' ? live() : v == 'live' ? draft : G();
   const t = g.teams[i];
   const [b, d] = await M(
-    `<input type="text" value="${esc(t.name)}"><input type="color" value="${t.color}">`,
-    ['Save', 'Cancel']);
+    `<label class="mu">Team name</label><input type="text" data-f="name" value="${esc(t.name)}">
+     <label class="mu">Overlay name (max 12 characters)</label><input type="text" data-f="short" maxlength="12" value="${esc(tn(t))}">
+     <label class="mu">Overlay code (3 letters)</label><input type="text" data-f="code" maxlength="3" value="${esc(tc(t))}">
+     <label class="mu">Color</label><input type="color" data-f="color" value="${t.color}">`,
+    ['Save', 'Cancel'],
+    d => {
+      const f = k => d.querySelector('[data-f=' + k + ']');
+      let sTouched = t.short != null, cTouched = t.code != null;   // custom values count as already edited
+      f('short').oninput = () => { sTouched = true; };
+      f('code').oninput = () => { cTouched = true; };
+      f('name').oninput = () => {                                   // keep untouched fields in step with the name
+        if (!sTouched) f('short').value = defShort(f('name').value);
+        if (!cTouched) f('code').value = defCode(f('name').value);
+      };
+    });
   if (b == 0) {
-    t.name = d.querySelector('input[type=text]').value.trim() || t.name;
-    t.color = d.querySelector('input[type=color]').value;
+    const f = k => d.querySelector('[data-f=' + k + ']');
+    t.name = f('name').value.trim() || t.name;
+    t.color = f('color').value;
+    // Only store the overlay fields when they differ from the automatic defaults.
+    const sh = f('short').value.trim().slice(0, 12), cd = f('code').value.trim().toUpperCase().slice(0, 3);
+    if (sh && sh != defShort(t.name)) t.short = sh; else delete t.short;
+    if (cd && cd != defCode(t.name)) t.code = cd; else delete t.code;
     save(); draw();
   }
 }
@@ -414,6 +475,26 @@ async function editPt(si, pi) {
   editPt(si, s.points.indexOf(p));
 }
 
+// "Sync points": move EVERY point in the game earlier or later by a few seconds.
+// (Scorers usually tap a moment after the rally actually ended, so the usual fix is a small negative shift.)
+// Points stay inside their own set. The dialog re-opens after each shift so it can be repeated.
+async function syncPoints(total = 0) {
+  const g = G();
+  const [b] = await M(
+    `<b>Sync points</b><p class="mu" style="margin:6px 0 0">Scorers tap a moment after the rally ends. Move every point in this game earlier (-) or later (+).<br>Net change so far: ${total > 0 ? '+' : ''}${total}s</p>`,
+    ['-5s', '-2s', '-1s', '+1s', '+2s', 'Done']);
+  if (b == 5) return draw();
+  const d = [-5, -2, -1, 1, 2][b] * 1000;
+  const land = (s, p) => Math.min(Math.max(p.t + d, s.start), s.end || g.end);   // new time, kept inside the set
+  let stopped = 0;
+  g.sets.forEach(s => s.points.forEach(p => { if (land(s, p) != p.t + d) stopped++; }));
+  if (stopped && !await yes(`${stopped} point${stopped == 1 ? '' : 's'} would move past the start or end of its set and will be stopped at the set edge.`, 'Shift anyway'))
+    return syncPoints(total);
+  g.sets.forEach(s => s.points.forEach(p => { p.t = land(s, p); }));
+  save();
+  syncPoints(total + d / 1000);
+}
+
 // "+ Add set": append a 5-minute set right after the last one (asks who serves).
 async function addSet() {
   const g = G(), s = await server(g.teams);
@@ -533,7 +614,7 @@ function viewHist() {
   const rows = [...db.games].filter(x => x.end).sort((a, b) => b.start - a.start).map(x =>
     `<div class="row" onclick="go('detail',${x.id})"><div class="g"><b>${esc(x.teams[0].name)} vs ${esc(x.teams[1].name)}</b><div class="mu">${new Date(x.start).toLocaleString()}</div></div>›</div>`
   ).join('');
-  return `<div class="pg"><div class="nav"><button onclick="go('home')">Back</button></div><h2>Previous games</h2>` +
+  return `<div class="pg"><div class="nav"><button onclick="go('home')">Back</button>` + backupBanner() + `</div><h2>Previous games</h2>` +
     (rows || '<p class="mu">No finished games yet.</p>') + backupSection() + '</div>';
 }
 
@@ -561,7 +642,7 @@ function viewEdit(g) {
     ).join('');
     return header + points + brk(g, i);
   }).join('');
-  return `<div class="pg"><div class="nav"><button onclick="go('detail')">Back</button></div><h2>Timeline</h2>` +
+  return `<div class="pg"><div class="nav"><button onclick="go('detail')">Back</button><button onclick="syncPoints()">Sync points</button></div><h2>Timeline</h2>` +
     body + '<button class="p" style="width:100%;margin-top:12px" onclick="addSet()">+ Add set</button></div>';
 }
 
@@ -662,15 +743,16 @@ async function saveFile(data, name) {
     const f = new File([data], name, { type: data.type });
     if (navigator.canShare && navigator.canShare({ files: [f] })) {
       await navigator.share({ files: [f] });   // file only: adding title/text makes some apps (Dropbox) save an extra .txt
-      return;
+      return true;
     }
   } catch (e) {
-    if (e.name == 'AbortError') return;   // user closed the share sheet
+    if (e.name == 'AbortError') return false;   // user closed the share sheet
   }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(data);
   a.download = name;
   document.body.append(a); a.click(); a.remove();
+  return true;
 }
 
 // "Download" button on the Raw data page.
@@ -680,19 +762,49 @@ function dl() {
 
 // ---- Backup / restore ----------------------------------------------------
 
+// Backup status in the top-right of the Previous games page (same row as the Back button):
+// an amber pill button with just the headline, or a quiet "all backed up" note.
+const backupBanner = () => {
+  const n = unsavedCount();
+  if (n) return `<button class="bk" onclick="backupInfo()">${unsavedText(n)}</button>`;
+  if (!db.games.some(g => g.end)) return '';
+  return '<span class="mu" style="margin-left:auto">✓ All backed up</span>';
+};
+
+// Popup opened by the yellow button: explains why backups matter and offers the download.
+async function backupInfo() {
+  const [b] = await M(
+    `<b>${unsavedText(unsavedCount())}</b><p class="mu" style="margin:8px 0 0">Games are stored only on this device. Deleting the app, clearing browser data or resetting the phone erases them. A backup file keeps every game safe so you can restore it later. Save it to iCloud Drive, Dropbox or Files, for example.</p>`,
+    ['Back up now', 'Close']);
+  if (b == 0) backup();
+}
+
+// Small status line: did the browser agree to protect this app's storage from automatic clean-up?
+const persistLine = () =>
+  persisted === true ? '<p class="mu">Browser storage protection: on.</p>'
+  : persisted === false ? '<p class="mu">Browser storage protection: not granted by this browser, so regular backups matter.</p>' : '';
+
 // The "Data Backup/Restore" block shown at the bottom of the Previous games page.
 const backupSection = () =>
   `<h2 style="margin-top:28px">Data Backup/Restore</h2>
   <p class="mu">Download every game on this device as one file, or restore games from a backup file. Restore also accepts the single-game file from a game's Raw data page.</p>
+  ${persistLine()}
   <div class="nav"><button onclick="backup()">Download backup</button><button onclick="document.getElementById('rf').click()">Restore from file</button></div>
   <input id="rf" type="file" accept=".json,application/json" multiple hidden onchange="restore(this)">`;
 
 // Download all games (finished and in-progress) as one JSON file.
-function backup() {
+async function backup() {
   if (!db.games.length) return alert('There are no games to back up yet.');
   const d = new Date(), stamp = d.getFullYear() + '-' + P(d.getMonth() + 1) + '-' + P(d.getDate());
   const data = { app: 'VolleyTrack', type: 'backup', version: 2, exported: d.toISOString(), games: db.games };
-  saveFile(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), 'volleytrack-backup-' + stamp + '.json');
+  const snapshot = {};
+  db.games.forEach(g => { snapshot[g.id] = sig(g); });   // fingerprints taken before the share sheet opens
+  const done = await saveFile(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), 'volleytrack-backup-' + stamp + '.json');
+  if (done) {                                              // not recorded if the user cancelled the share sheet
+    db.backup = { at: Date.now(), sig: snapshot };
+    save();
+    if (v == 'hist') draw();                               // refresh the "N games since last backup" banner
+  }
 }
 
 // Is this object a usable game record? (Checked before importing so a bad file can't break the app.)
@@ -701,7 +813,8 @@ const validGame = g => {
   if (!Array.isArray(g.teams) || g.teams.length != 2 || !Array.isArray(g.sets) || !g.sets.length) return false;
   const ids = g.teams.map(t => t && t.id);
   return ids.every(Boolean) &&
-    g.teams.every(t => typeof t.name == 'string' && /^#[0-9a-fA-F]{3,8}$/.test(t.color)) &&   // color goes into a style attribute, so keep it strict
+    g.teams.every(t => typeof t.name == 'string' && /^#[0-9a-fA-F]{3,8}$/.test(t.color) &&
+      (t.short == null || typeof t.short == 'string') && (t.code == null || typeof t.code == 'string')) &&   // color goes into a style attribute, so keep it strict
     g.sets.every(s => s && typeof s.start == 'number' && ids.includes(s.server) && Array.isArray(s.points) &&
       s.points.every(p => p && typeof p.t == 'number' && ids.includes(p.team)));
 };
@@ -735,8 +848,8 @@ async function restore(inp) {
     // Only one game can be in progress at a time.
     if (!g.end && db.games.some(x => !x.end && x.id != g.id)) { skipped++; return; }
     const i = db.games.findIndex(x => x.id == g.id);
-    if (i < 0) { db.games.push(g); added++; }
-    else if (replace) { db.games[i] = g; replaced++; }
+    if (i < 0) { db.games.push(g); markSaved(g); added++; }
+    else if (replace) { db.games[i] = g; markSaved(g); replaced++; }
     else skipped++;
   });
   save();
@@ -775,7 +888,9 @@ function state(g, t) {
 // Filled rounded rectangle on canvas context x.
 function rr(x, a, b, w, h, r) { x.beginPath(); x.roundRect(a, b, w, h, r); x.fill(); }
 
-// Draw ONE scoreboard frame onto canvas context x (1280x720, transparent background).
+// Draw ONE scoreboard frame onto canvas context x (transparent background).
+// Styles are designed in a 1280x720 coordinate space; the video renderer scales the canvas context
+// by 1.5 so the exported frames are 1920x1080.
 //   g = game, t = absolute time to show, st = index into STYLES
 // To add a style: add an entry to STYLES (name + preview crop) and a new branch in sb() below.
 const STYLES = [
@@ -786,7 +901,6 @@ const STYLES = [
   { name: 'Corner scorebug', crop: [20, 20, 300, 170] },
   { name: 'Set-by-set table', crop: [20, 20, 700, 170] }
 ];
-const ab = n => n.trim().slice(0, 3).toUpperCase();   // 3-letter team code, e.g. "SPK"
 function sb(x, g, t, st) {
   const S = state(g, t);
   x.clearRect(0, 0, 1280, 720);
@@ -799,7 +913,7 @@ function sb(x, g, t, st) {
       const X = 40 + i * 320;                                      // left edge of this team's half
       x.fillStyle = g.teams[i].color; rr(x, X, 40, 10, 50, 4);     // team color stripe
       x.fillStyle = '#fff'; x.font = '600 26px sans-serif'; x.textAlign = 'left';
-      x.fillText(g.teams[i].name.slice(0, 12), X + 22, 65);        // team name (max 12 chars)
+      x.fillText(tn(g.teams[i]), X + 22, 65);        // team name (max 12 chars)
       x.font = '800 38px sans-serif'; x.textAlign = 'right';
       x.fillText(S.n[i], X + 270, 65);                             // current set score
       x.font = '20px sans-serif'; x.fillStyle = '#ffd23f';
@@ -813,7 +927,7 @@ function sb(x, g, t, st) {
       const Y = 40 + i * 55;                                       // top of this team's row
       x.fillStyle = g.teams[i].color; rr(x, 40, Y, 12, 45, 4);     // team color stripe
       x.fillStyle = '#fff'; x.font = '600 24px sans-serif'; x.textAlign = 'left';
-      x.fillText(g.teams[i].name.slice(0, 12), 62, Y + 23);        // team name
+      x.fillText(tn(g.teams[i]), 62, Y + 23);        // team name
       x.fillStyle = '#ffd23f'; x.font = '700 22px sans-serif';
       x.fillText(S.w[i], 240, Y + 23);                             // sets won (yellow number)
       x.fillStyle = '#fff'; x.font = '800 36px sans-serif'; x.textAlign = 'right';
@@ -826,8 +940,8 @@ function sb(x, g, t, st) {
     x.fillStyle = A.color; rr(x, 100, 610, 12, 76, 4);              // left team color cap
     x.fillStyle = B.color; rr(x, 1168, 610, 12, 76, 4);             // right team color cap
     x.font = '600 30px sans-serif'; x.fillStyle = '#fff';
-    x.textAlign = 'left';  x.fillText(A.name.slice(0, 12), 128, 648);
-    x.textAlign = 'right'; x.fillText(B.name.slice(0, 12), 1152, 648);
+    x.textAlign = 'left';  x.fillText(tn(A), 128, 648);
+    x.textAlign = 'right'; x.fillText(tn(B), 1152, 648);
     x.fillStyle = '#ffd23f';                                         // yellow dots = sets won
     for (let k = 0; k < S.w[0]; k++) { x.beginPath(); x.arc(400 + k * 22, 648, 8, 0, 7); x.fill(); }
     for (let k = 0; k < S.w[1]; k++) { x.beginPath(); x.arc(830 + k * 22, 648, 8, 0, 7); x.fill(); }
@@ -843,8 +957,8 @@ function sb(x, g, t, st) {
     x.fillStyle = A.color; x.beginPath(); x.arc(516, 48, 9, 0, 7); x.fill();   // team color dots
     x.fillStyle = B.color; x.beginPath(); x.arc(764, 48, 9, 0, 7); x.fill();
     x.fillStyle = '#fff'; x.font = '600 20px sans-serif';
-    x.textAlign = 'left';  x.fillText(ab(A.name), 536, 49);         // 3-letter team codes
-    x.textAlign = 'right'; x.fillText(ab(B.name), 744, 49);
+    x.textAlign = 'left';  x.fillText(tc(A), 536, 49);         // 3-letter team codes
+    x.textAlign = 'right'; x.fillText(tc(B), 744, 49);
     x.font = '800 30px sans-serif'; x.textAlign = 'center';
     x.fillText(S.n[0], 600, 49); x.fillText(S.n[1], 680, 49);       // current set scores
     x.fillStyle = '#999'; x.font = '600 22px sans-serif'; x.fillText('-', 640, 48);
@@ -861,7 +975,7 @@ function sb(x, g, t, st) {
       x.fillStyle = '#fff';  rr(x, 218, y, 84, 56, 0);               // score box
       x.textBaseline = 'middle';
       x.fillStyle = '#fff'; x.font = '700 28px sans-serif'; x.textAlign = 'left';
-      x.fillText(ab(t.name), 56, y + 29);
+      x.fillText(tc(t), 56, y + 29);
       x.fillStyle = '#ffd23f'; x.textAlign = 'center';
       x.fillText(S.w[i], 190, y + 29);
       x.fillStyle = '#111'; x.font = '800 36px sans-serif';
@@ -882,7 +996,7 @@ function sb(x, g, t, st) {
       const y = 66 + i * 52;                                         // top of this team's row
       x.fillStyle = t.color; rr(x, 42, y, 8, 44, 2);
       x.fillStyle = '#fff'; x.font = '600 26px sans-serif'; x.textAlign = 'left';
-      x.fillText(t.name.slice(0, 12), 62, y + 23);
+      x.fillText(tn(t), 62, y + 23);
       x.textAlign = 'center';
       S.ps.forEach((p, k) => {
         const cur = k == cols - 1;                                   // last column = the live set (bold, brighter)
@@ -912,11 +1026,12 @@ async function rec() {
     awake(true);                               // keep the screen on while rendering
     try {
       const { Output, WebMOutputFormat, BufferTarget, CanvasSource } = Mediabunny;
-      const c = document.createElement('canvas'); c.width = 1280; c.height = 720;
+      const c = document.createElement('canvas'); c.width = 1920; c.height = 1080;   // full HD
       const x = c.getContext('2d');
+      x.scale(1.5, 1.5);   // the styles are drawn in a 1280x720 space; scale it up so text and shapes stay sharp
       const out = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
       // VP9 with alpha='keep' => transparent background. Raise bitrate for higher quality.
-      const src = new CanvasSource(c, { codec: 'vp9', bitrate: 2e6, alpha: 'keep', keyFrameInterval: 2 });
+      const src = new CanvasSource(c, { codec: 'vp9', bitrate: 4e6, alpha: 'keep', keyFrameInterval: 2 });
       out.addVideoTrack(src);
       await out.start();
 
@@ -966,6 +1081,11 @@ async function rec() {
 // Ask for portrait lock. Android honors this (and the manifest's "orientation") in installed apps;
 // iPhone ignores both, which is why the #rot overlay above exists.
 try { screen.orientation.lock('portrait'); } catch (e) {}
+
+// Ask the browser not to clear this app's data automatically (it may decline; the result shows on the history page).
+if (navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().then(ok => { persisted = ok; if (v == 'hist') draw(); }).catch(() => {});
+}
 
 // Register the service worker (sw.js) so the app works offline after the first visit.
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

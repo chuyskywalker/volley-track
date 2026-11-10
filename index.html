@@ -62,6 +62,7 @@
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body {
+  touch-action: manipulation;   /* no double-tap-to-zoom delay/zoom on touch screens */
   margin: 0; height: 100%;
   background: var(--bg); color: var(--tx);
   font: 16px system-ui, sans-serif;
@@ -1087,6 +1088,20 @@ async function rec() {
 /* =====================================================================
    9. STARTUP
    ===================================================================== */
+
+// Stop phones zooming the scoring screen while you tap fast. The viewport tag's user-scalable=no is
+// ignored by iPhone Safari, so it is blocked here: a quick second tap would be a double-tap zoom, and two
+// fingers would be a pinch zoom. Only the scoring screen (.lv) is affected; every other page can still zoom.
+let lastTap = 0;
+document.addEventListener('touchend', e => {
+  if (!e.target.closest || !e.target.closest('.lv')) return;
+  const now = Date.now();
+  if (now - lastTap < 350) e.preventDefault();   // second tap of a double tap
+  lastTap = now;
+}, { passive: false });
+['gesturestart', 'gesturechange'].forEach(t => document.addEventListener(t, e => {
+  if (e.target.closest && e.target.closest('.lv')) e.preventDefault();   // pinch (iOS Safari only event)
+}));
 
 // Ask for portrait lock. Android honors this (and the manifest's "orientation") in installed apps;
 // iPhone ignores both, which is why the #rot overlay above exists.
